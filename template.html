@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flashcards - /*SET_NAME*/</title>
+<!--
+  Flashcards TEMPLATE. It holds no data on its own.
+  build.ps1 reads each *.csv and injects the data at the CARDS_PLACEHOLDER,
+  SET_ID and SET_NAME markers, then writes <csv-name>.html.
+  Open the built <name>.html (template.html itself is only the scaffold).
+  Single file, no server/build/libraries. Sections are marked with comments.
+
+  Features:
+   - grid of independent cards (as many cards as rows in the CSV);
+   - click a card to flip it in 3D (front = word -> back = text);
+   - the "check" button in the corner marks a card as learned (clicking it does not flip);
+   - progress bar "Learned X / N", a "Hide learned" toggle, a "Reset" button;
+   - learned marks are stored in localStorage - they survive a reload;
+   - light + automatic dark theme (follows the OS setting) via CSS variables.
+-->
+<style>
+/* ========== THEME TOKENS (light) ========== */
+:root{
+  --page-bg-1:#eef2ff; --page-bg-2:#f6f8fc;
+  --ink:#0f172a; --muted:#64748b;
+  --surface:#ffffff; --surface-border:#e6e9f0;
+  --shadow:0 1px 2px rgba(16,24,40,.06), 0 10px 24px rgba(16,24,40,.07);
+  --shadow-hover:0 16px 38px rgba(99,102,241,.22);
+  --accent:#6366f1; --accent-2:#8b5cf6;
+  --front-ink:#0f172a;
+  --back-grad:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);
+  --learned:#10b981;
+  --toolbar-bg:#ffffff; --track:#e6e9f0;
+}
+/* ========== THEME TOKENS (dark, auto) ========== */
+@media (prefers-color-scheme: dark){
+  :root{
+    --page-bg-1:#0e1526; --page-bg-2:#0b1220;
+    --ink:#e5e7eb; --muted:#94a3b8;
+    --surface:#182234; --surface-border:#2a3650;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 12px 30px rgba(0,0,0,.45);
+    --shadow-hover:0 16px 40px rgba(99,102,241,.4);
+    --accent:#818cf8; --accent-2:#a78bfa;
+    --front-ink:#f1f5f9;
+    --back-grad:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+    --learned:#34d399;
+    --toolbar-bg:#151e30; --track:#2a3650;
+  }
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  color:var(--ink);
+  background:
+    radial-gradient(1100px 520px at 12% -12%, var(--page-bg-1), transparent 60%),
+    var(--page-bg-2);
+  min-height:100vh;
+  padding:34px 20px 48px;
+  -webkit-font-smoothing:antialiased;
+}
+.container{max-width:960px;margin:0 auto}
+
+/* ========== HEADER ========== */
+h1{font-size:27px;font-weight:800;letter-spacing:-.02em}
+.subtitle{color:var(--muted);font-size:13.5px;margin:6px 0 20px;line-height:1.5}
+.subtitle b{color:var(--ink)}
+
+/* ========== TOOLBAR ========== */
+.bar{
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  background:var(--toolbar-bg);
+  border:1px solid var(--surface-border);
+  border-radius:16px;
+  box-shadow:var(--shadow);
+  padding:14px 18px;margin-bottom:22px;
+}
+.progress-wrap{display:flex;flex-direction:column;gap:7px;flex:1;min-width:190px;max-width:340px}
+.progress{font-weight:700;font-size:13px;letter-spacing:.01em}
+.track{height:8px;background:var(--track);border-radius:999px;overflow:hidden}
+.fill{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-2));transition:width .4s cubic-bezier(.4,.2,.2,1)}
+.toggle{color:var(--ink);cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:8px;font-size:13px}
+.toggle input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+.reset{
+  border:1px solid var(--surface-border);background:transparent;color:var(--muted);
+  border-radius:10px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;
+  transition:all .15s;
+}
+.reset:hover{color:var(--ink);border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 15%,transparent)}
+
+/* ========== CARD GRID (as many columns as fit) ========== */
+.grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(190px, 1fr));gap:16px}
+.grid.hide-learned .card.learned{display:none}   /* "hide learned" mode */
+
+/* ========== CARD ========== */
+/* .card is the perspective "stage" and the anchor for the button; .card-inner is what rotates in 3D */
+.card{position:relative;perspective:1000px;height:168px;cursor:pointer}
+.card-inner{
+  position:relative;width:100%;height:100%;
+  transform-style:preserve-3d;
+  transition:transform .55s cubic-bezier(.4,.2,.2,1), opacity .2s;
+}
+.card.flipped .card-inner{transform:rotateY(180deg)}   /* flipped state */
+.card.learned .card-inner{opacity:.5}                  /* learned - dim it */
+
+/* front and back overlap; hide the reverse side so it does not show through */
+.face{
+  position:absolute;inset:0;
+  display:flex;align-items:center;justify-content:center;text-align:center;
+  padding:16px;border-radius:18px;
+  box-shadow:var(--shadow);
+  backface-visibility:hidden;-webkit-backface-visibility:hidden;
+  transition:box-shadow .2s ease, border-color .2s ease;
+}
+.card:hover .face{box-shadow:var(--shadow-hover)}   /* lift on hover */
+
+/* FRONT - the word */
+.front{
+  background:var(--surface);
+  border:1px solid var(--surface-border);
+  color:var(--front-ink);
+  font-size:21px;font-weight:700;letter-spacing:-.01em;
+}
+.card.learned .front{border-color:var(--learned)}
+/* BACK - the text; pre-rotated so it reads correctly after the flip */
+.back{
+  background:var(--back-grad);color:#fff;
+  font-size:15px;font-weight:500;line-height:1.55;
+  transform:rotateY(180deg);
+  border:1px solid transparent;
+}
+
+/* ========== "learned" button in the corner (outside .card-inner, so it does not flip) ========== */
+.learn-btn{
+  position:absolute;top:9px;right:9px;z-index:2;
+  width:28px;height:28px;border-radius:50%;
+  border:2px solid var(--surface-border);background:var(--surface);color:var(--muted);
+  font-size:15px;line-height:1;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 1px 3px rgba(16,24,40,.12);
+  transition:all .16s ease;
+}
+.learn-btn:hover{border-color:var(--learned);color:var(--learned);transform:scale(1.08)}
+.card.learned .learn-btn{background:var(--learned);border-color:var(--learned);color:#fff}
+
+.hint{color:var(--muted);font-size:12px;margin-top:20px}
+.hint b{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Flashcards - /*SET_NAME*/</h1>
+<p class="subtitle" id="subtitle">Click a card to flip it (word &rarr; text). The check button in the corner marks it as learned.</p>
+
+<div class="bar">
+  <div class="progress-wrap">
+    <span class="progress" id="progress">Learned 0 / 0</span>
+    <div class="track"><div class="fill" id="progressfill"></div></div>
+  </div>
+  <label class="toggle"><input type="checkbox" id="hide"> Hide learned</label>
+  <button class="reset" id="reset">Reset progress</button>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<p class="hint">Data comes from <b>cards.csv</b>.</p>
+
+</div>
+<script>
+/* ========== 1. DATA (build.ps1 injects it from the CSV in place of the marker below) ========== */
+const CARDS = [
+/*CARDS_PLACEHOLDER*/
+];
+
+/* ========== 2. LEARNED MEMORY (localStorage; a card's key is its word) ========== */
+const SET_ID = "/*SET_ID*/";                              // set name (the CSV name) - injected by build.ps1
+const STORAGE_KEY = 'flashcards-learned-v1:' + SET_ID;    // each set keeps its own "learned" memory
+let learned = new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'));
+function saveLearned(){ localStorage.setItem(STORAGE_KEY, JSON.stringify([...learned])); }
+
+/* ========== 3. HELPER: escape text so data can't break the markup ========== */
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ========== 4. RENDER: one card per CARDS item ========== */
+const grid = document.getElementById('grid');
+CARDS.forEach(c => {
+  const key = c.front;                 // remember "learned" by the word
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.key = key;
+  card.innerHTML =
+    `<button class="learn-btn" title="Mark as learned">&#10003;</button>
+     <div class="card-inner">
+       <div class="face front">${esc(c.front)}</div>
+       <div class="face back">${esc(c.back)}</div>
+     </div>`;
+  if (learned.has(key)) card.classList.add('learned');
+
+  /* click the card - flip it */
+  card.addEventListener('click', () => card.classList.toggle('flipped'));
+
+  /* click the check - toggle "learned" (does not flip the card) */
+  card.querySelector('.learn-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    if (learned.has(key)) learned.delete(key); else learned.add(key);
+    card.classList.toggle('learned');
+    saveLearned();
+    updateProgress();
+  });
+
+  grid.appendChild(card);
+});
+
+/* ========== 5. PROGRESS / CONTROLS ========== */
+function updateProgress(){
+  const total = CARDS.length;
+  const done  = CARDS.filter(c => learned.has(c.front)).length;   // count only the ones that actually exist
+  document.getElementById('progress').textContent = `Learned ${done} / ${total}`;
+  const pct = total ? Math.round(done / total * 100) : 0;
+  document.getElementById('progressfill').style.width = pct + '%';
+}
+document.getElementById('hide').addEventListener('change', e => {
+  grid.classList.toggle('hide-learned', e.target.checked);
+});
+document.getElementById('reset').addEventListener('click', () => {
+  learned.clear(); saveLearned();
+  document.querySelectorAll('.card.learned').forEach(el => el.classList.remove('learned'));
+  updateProgress();
+});
+
+/* ========== 6. STAT in the subtitle + initial progress ========== */
+document.getElementById('subtitle').insertAdjacentHTML('afterbegin',
+  `<b>${CARDS.length} cards</b>.<br>`);
+updateProgress();
+</script>
+</body>
+</html>
